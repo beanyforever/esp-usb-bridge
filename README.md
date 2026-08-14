@@ -1,5 +1,11 @@
 # ESP USB Bridge
 
+> **Fork note — high-throughput serial bridge.** This tree carries a small modification
+> (branch `throughput-921600`) that makes the ESP-Prog-2 serial bridge capable of a
+> **lossless raw UART read, validated byte-for-byte from 115200 up to 4,000,000 baud**
+> (stock tops out at 115200). See **[THROUGHPUT.md](THROUGHPUT.md)** for what changed, how to
+> build (`./build.sh`) and flash (`./flash.sh`), the validation results, and known limitations.
+
 The ESP USB Bridge is an [ESP-IDF](https://github.com/espressif/esp-idf) project utilizing an ESP32-S2 or an ESP32-S3 chip to create a bridge between a computer (PC) and a target microcontroller (MCU). It can serve as a replacement for USB-to-UART chips (e.g. CP210x) or a debugger.
 
 This project is universal and can be used with various hardware setups. For detailed hardware setup requirements, please refer to the [Development Board](#development-board) section. However, if you own an ESP-Prog2, you can use the following link to try to flash it using ESP Launchpad.
