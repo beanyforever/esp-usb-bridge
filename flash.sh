@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Flash the ESP-Prog-2 high-throughput firmware (see THROUGHPUT.md).
+# Flash the ESP-Prog-2 high-throughput firmware (see docs/THROUGHPUT.md).
 #
 # Flashes the MERGED image at 0x0 with a full erase -- the foolproof path.
 # (A merged image at 0x10000, or an app-only image at 0x0, bricks the probe:

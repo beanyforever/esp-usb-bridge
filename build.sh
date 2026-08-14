@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the ESP-Prog-2 high-throughput UART bridge firmware (see THROUGHPUT.md).
+# Build the ESP-Prog-2 high-throughput UART bridge firmware (see docs/THROUGHPUT.md).
 #
 # Produces:
 #   build/bridge.bin                  - app only  (flash at 0x10000)
@@ -34,7 +34,7 @@ echo ">>> SDKCONFIG_DEFAULTS=$SDKCONFIG_DEFAULTS"
 idf.py build
 
 # Single-file merged image so flashing is a foolproof 'write at 0x0' (avoids the
-# app-vs-merged offset trap that can brick the probe -- see THROUGHPUT.md).
+# app-vs-merged offset trap that can brick the probe -- see docs/THROUGHPUT.md).
 idf.py merge-bin -o esp-prog2-throughput.bin
 
 cat <<EOF
