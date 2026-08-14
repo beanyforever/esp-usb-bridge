@@ -28,7 +28,15 @@
 #define KB(x) ((x) * 1024)
 
 #define SLAVE_UART_NUM          UART_NUM_1
+/* Per-read chunk copied out of the driver ring into the uart_event_task stack
+ * (dtmp[]). MUST stay small -- that task's stack is only KB(8), so this cannot
+ * be grown to the ring size without overflowing the stack. Decoupled from the
+ * driver RX ring below. */
 #define SLAVE_UART_BUF_SIZE     KB(2)
+/* Throughput: driver RX ring 4 KB -> 16 KB. This is the real stall buffer for
+ * target->PC data; it lives on the heap inside the UART driver, independent of
+ * the stack-resident read chunk above. */
+#define SLAVE_UART_RX_RINGBUF_SIZE KB(16)
 #define SLAVE_UART_DEFAULT_BAUD 115200
 #define GPIO_BOOT CONFIG_SERIAL_HANDLER_GPIO_BOOT
 #define GPIO_RST CONFIG_SERIAL_HANDLER_GPIO_RST
@@ -100,13 +108,26 @@ static void uart_event_task(void *pvParameters)
             case UART_DATA:
                 // Only call callback if not flashing and callback is registered
                 if (!atomic_load(&s_transport.is_flashing) && s_transport.data_callback) {
-                    size_t buffered_len;
+                    // Drain the whole driver ring in read-chunk-sized reads. A single
+                    // event can represent far more than one chunk (e.g. a backlog that
+                    // built up during a host/USB stall); looping here clears it in one
+                    // pass instead of one chunk per queued event, which is what lets the
+                    // 16 KB ring recover after a stall. Reads are known-available, so the
+                    // zero timeout never blocks.
+                    size_t buffered_len = 0;
                     uart_get_buffered_data_len(SLAVE_UART_NUM, &buffered_len);
-                    const int read = uart_read_bytes(SLAVE_UART_NUM, dtmp, MIN(buffered_len, SLAVE_UART_BUF_SIZE), portMAX_DELAY);
-                    ESP_LOGD(TAG, "UART -> Bridge Callback (%d bytes)", read);
-                    ESP_LOG_BUFFER_HEXDUMP("UART RX", dtmp, read, ESP_LOG_DEBUG);
+                    while (buffered_len > 0) {
+                        const int read = uart_read_bytes(SLAVE_UART_NUM, dtmp,
+                                                         MIN(buffered_len, SLAVE_UART_BUF_SIZE), 0);
+                        if (read <= 0) {
+                            break;
+                        }
+                        ESP_LOGD(TAG, "UART -> Bridge Callback (%d bytes)", read);
+                        ESP_LOG_BUFFER_HEXDUMP("UART RX", dtmp, read, ESP_LOG_DEBUG);
 
-                    s_transport.data_callback(dtmp, read);
+                        s_transport.data_callback(dtmp, read);
+                        uart_get_buffered_data_len(SLAVE_UART_NUM, &buffered_len);
+                    }
                 }
                 // Note: When flashing, ESP loader will read data directly from UART
                 break;
@@ -135,7 +156,9 @@ static void uart_event_task(void *pvParameters)
             }
             taskYIELD();
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // No trailing vTaskDelay here: the loop already blocks on xQueueReceive
+        // with portMAX_DELAY, so it sleeps until the next event. The old 10 ms nap
+        // per iteration served no purpose but capped drain latency/throughput.
     }
     vTaskDelete(NULL);
 }
@@ -147,10 +170,10 @@ static esp_err_t init_uart_transport(void)
         .uart_port = SLAVE_UART_NUM,
         .uart_rx_pin = GPIO_RXD,
         .uart_tx_pin = GPIO_TXD,
-        .rx_buffer_size = SLAVE_UART_BUF_SIZE * 2,
+        .rx_buffer_size = SLAVE_UART_RX_RINGBUF_SIZE,
         .tx_buffer_size = 0,
         .uart_queue = &s_transport.uart_queue,
-        .queue_size = 20,
+        .queue_size = 40,
         .reset_trigger_pin = GPIO_RST,
         .gpio0_trigger_pin = GPIO_BOOT,
     };

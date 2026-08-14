@@ -25,7 +25,12 @@
 #include "usb_phy.h"
 #include "soc/rtc_cntl_reg.h"
 
-#define USB_SEND_RINGBUFFER_SIZE (2 * 1024)
+/* Throughput: USB send ring 2 KB -> 32 KB (~350 ms of stall margin at 90 KB/s,
+ * vs ~22 ms before) so ordinary host/USB scheduler hiccups no longer overflow
+ * it. Overflow is still lossy (transport_data_received_callback drops on a full
+ * ring) -- depth, not back-pressure, is what buys the margin here. 32 KB of
+ * internal DRAM; watch the heap if other buffers grow too. */
+#define USB_SEND_RINGBUFFER_SIZE (32 * 1024)
 /* tud_cdc_n_get_line_state(): bit 0 = DTR, bit 1 = RTS */
 #define CDC_LINE_STATE_DTR (1u << 0)
 
