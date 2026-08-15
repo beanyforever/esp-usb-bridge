@@ -34,4 +34,19 @@ menu "eub-target configuration"
             Optional plain-GPIO LED toggled by app_tick(). Default -1 (disabled) to avoid
             board-specific addressable-RGB pins; the JTAG counter is the reliable observable.
 
+    config EUB_TARGET_BAUD_UP_GPIO
+        int "Baud step-UP button GPIO (-1 disables)"
+        default 12
+        help
+            Momentary button to ground; each press steps the bridge UART one rung UP the baud
+            ladder (9600..4100000). Input with internal pull-up, active-low. Avoid GPIO33-37
+            (octal flash/PSRAM pins on R8 modules) and the strapping pins (0/3/45/46).
+
+    config EUB_TARGET_BAUD_DOWN_GPIO
+        int "Baud step-DOWN button GPIO (-1 disables)"
+        default 11
+        help
+            Momentary button to ground; each press steps the bridge UART one rung DOWN.
+            Input with internal pull-up, active-low.
+
 endmenu

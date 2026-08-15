@@ -43,6 +43,8 @@ static const char *TAG = "eub-target";
 #define BRIDGE_RX_BUFSZ   (8 * 1024)
 #define BURST_TRIGGER     '!'          /* this byte on the bridge UART fires a default burst */
 #define DEFAULT_BURST_LEN (64 * 1024)
+#define BAUD_UP_GPIO      (CONFIG_EUB_TARGET_BAUD_UP_GPIO)     /* pull-up, GND = step up   */
+#define BAUD_DOWN_GPIO    (CONFIG_EUB_TARGET_BAUD_DOWN_GPIO)   /* pull-up, GND = step down */
 
 /* ---- JTAG-observable state (read these from GDB) ---- */
 volatile uint32_t g_tick_counter   = 0;   /* ++ every app_tick(); a halt should freeze it */
@@ -57,6 +59,28 @@ uint8_t g_jtag_pattern[JTAG_BUF_LEN];     /* read-back + verify target */
 uint8_t g_jtag_scratch[JTAG_BUF_LEN];     /* write + read-back + verify target */
 
 static bool s_burst_active = false;
+
+/* ---- baud ladder (stepped by the GPIO up/down buttons and re-synced by the console command) ---- */
+static const uint32_t BAUD_LADDER[] = {
+    9600, 115200, 230400, 460800, 921600, 1500000, 2000000, 4000000, 4100000,
+};
+#define BAUD_LADDER_N ((int)(sizeof(BAUD_LADDER) / sizeof(BAUD_LADDER[0])))
+static int s_baud_index = 1;   /* current rung; initialised from DEFAULT_BAUD in app_main */
+
+/* Nearest ladder rung to an arbitrary baud (keeps the button index sane after a console `baud`). */
+static int ladder_index_for(uint32_t baud)
+{
+    int best = 0;
+    uint32_t bestd = 0xFFFFFFFFu;
+    for (int i = 0; i < BAUD_LADDER_N; i++) {
+        uint32_t d = (BAUD_LADDER[i] > baud) ? (BAUD_LADDER[i] - baud) : (baud - BAUD_LADDER[i]);
+        if (d < bestd) {
+            bestd = d;
+            best = i;
+        }
+    }
+    return best;
+}
 
 static void jtag_buffers_init(void)
 {
@@ -138,11 +162,57 @@ static void set_bridge_baud(uint32_t baud)
     uint32_t actual = 0;
     uart_get_baudrate(BRIDGE_UART, &actual);
     g_current_baud = actual;
+    s_baud_index = ladder_index_for(actual);
     /* Log to the console (clean); also announce on the bridge at the NEW rate -- the operator
      * will see garbage on the bridge until they switch their end to match. */
     ESP_LOGI(TAG, "baud requested %" PRIu32 " -> %s, actual %" PRIu32, baud, esp_err_to_name(err), actual);
     bridge_printf("\r\n<BAUD now=%" PRIu32 ">\r\n", actual);
 }
+
+/* Move `delta` rungs along the ladder (clamped at both ends) and apply the new baud. */
+static void step_baud(int delta)
+{
+    int i = s_baud_index + delta;
+    if (i < 0) {
+        i = 0;
+    }
+    if (i >= BAUD_LADDER_N) {
+        i = BAUD_LADDER_N - 1;
+    }
+    if (i == s_baud_index) {
+        return;   /* already at an end */
+    }
+    ESP_LOGI(TAG, "button -> ladder[%d] = %" PRIu32, i, BAUD_LADDER[i]);
+    set_bridge_baud(BAUD_LADDER[i]);   /* re-syncs s_baud_index to this rung */
+}
+
+#if (BAUD_UP_GPIO >= 0) || (BAUD_DOWN_GPIO >= 0)
+/* Poll the up/down buttons: active-low (GND = pressed), one step per press, debounced. */
+static void button_task(void *arg)
+{
+    int prev_up = 1;
+    int prev_down = 1;
+    for (;;) {
+#if BAUD_UP_GPIO >= 0
+        int lvl_up = gpio_get_level((gpio_num_t)BAUD_UP_GPIO);
+        if (prev_up == 1 && lvl_up == 0) {          /* falling edge = press */
+            step_baud(+1);
+            vTaskDelay(pdMS_TO_TICKS(50));          /* debounce settle */
+        }
+        prev_up = lvl_up;
+#endif
+#if BAUD_DOWN_GPIO >= 0
+        int lvl_down = gpio_get_level((gpio_num_t)BAUD_DOWN_GPIO);
+        if (prev_down == 1 && lvl_down == 0) {
+            step_baud(-1);
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        prev_down = lvl_down;
+#endif
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+#endif
 
 /* ---- tasks ---- */
 static void bridge_rx_task(void *arg)
@@ -256,6 +326,25 @@ void app_main(void)
     ESP_ERROR_CHECK(uart_set_pin(BRIDGE_UART, BRIDGE_TX_GPIO, BRIDGE_RX_GPIO,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     g_current_baud = DEFAULT_BAUD;
+    s_baud_index = ladder_index_for(DEFAULT_BAUD);
+
+    /* Baud step buttons (input + internal pull-up, active-low; -1 disables). */
+#if (BAUD_UP_GPIO >= 0) || (BAUD_DOWN_GPIO >= 0)
+    uint64_t btn_mask = 0;
+#if BAUD_UP_GPIO >= 0
+    btn_mask |= 1ULL << BAUD_UP_GPIO;
+#endif
+#if BAUD_DOWN_GPIO >= 0
+    btn_mask |= 1ULL << BAUD_DOWN_GPIO;
+#endif
+    gpio_config_t btn_io = {
+        .pin_bit_mask = btn_mask,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    gpio_config(&btn_io);
+#endif
 
     const esp_app_desc_t *app = esp_app_get_description();
     uint8_t mac[6] = {0};
@@ -266,6 +355,8 @@ void app_main(void)
     ESP_LOGI(TAG, "JTAG buffers: g_jtag_pattern=%p g_jtag_scratch=%p len=%d (byte[i]=i&0xFF)",
              (void *)g_jtag_pattern, (void *)g_jtag_scratch, JTAG_BUF_LEN);
     ESP_LOGI(TAG, "console commands: baud <n> | pattern [n] | status | help");
+    ESP_LOGI(TAG, "baud buttons: up=GPIO%d down=GPIO%d (GND=press); ladder rungs=%d, start=%" PRIu32,
+             BAUD_UP_GPIO, BAUD_DOWN_GPIO, BAUD_LADDER_N, BAUD_LADDER[s_baud_index]);
 
     bridge_printf("\r\n=== eub-target %s  mac=%02x:%02x:%02x:%02x:%02x:%02x  baud=%d ===\r\n",
                   app->version, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], DEFAULT_BAUD);
@@ -274,4 +365,7 @@ void app_main(void)
     xTaskCreate(bridge_rx_task, "bridge_rx", 4096, NULL, 10, NULL);
     xTaskCreate(tick_task,      "tick",      3072, NULL, 5,  NULL);
     xTaskCreate(console_task,   "console",   4096, NULL, 5,  NULL);
+#if (BAUD_UP_GPIO >= 0) || (BAUD_DOWN_GPIO >= 0)
+    xTaskCreate(button_task,    "buttons",   3072, NULL, 6,  NULL);
+#endif
 }

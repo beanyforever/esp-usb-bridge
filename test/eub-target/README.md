@@ -41,13 +41,27 @@ default baud, or enable an LED (`EUB_TARGET_LED_GPIO`, default -1/off).
 
 Wire **both** sets to the same board to run the concurrent JTAG+serial stress (§D).
 
+**Baud step buttons** (optional — momentary switch, or just tap a jumper to GND):
+| Target | Function |
+|---|---|
+| GPIO12 → GND | step baud **UP** one rung |
+| GPIO11 → GND | step baud **DOWN** one rung |
+
+Both are inputs with internal pull-ups (active-low), so they need nothing but a switch/jumper to
+GND. Each press moves one rung along the ladder (clamped at the ends):
+`9600 → 115200 → 230400 → 460800 → 921600 → 1500000 → 2000000 → 4000000 → 4100000`.
+Pins are configurable in menuconfig (default UP=12, DOWN=11). **Avoid GPIO33–37** on octal-PSRAM
+(R8) modules — they're the PSRAM data pins.
+
 ## Console commands (on the dev board's own USB)
 
 Open it with `idf.py -p <DEVBOARD_USB_PORT> monitor` (or any terminal). Commands:
-- `baud <rate>` — set the bridge UART baud (300 … 5,000,000). Logs the *actual* rate achieved.
+- `baud <rate>` — set the bridge UART baud (300 … 5,000,000); re-syncs the ladder to the nearest rung.
 - `pattern [nbytes]` — stream a known pattern burst on the bridge (default 64 KiB).
 - `status` — tick counter, baud, echo/burst counts, JTAG buffer addresses.
 - `help`
+
+(Baud can also be stepped with the GPIO11/12 buttons above — handy on the bench without a keyboard.)
 
 ---
 
@@ -67,10 +81,12 @@ Prereqs on the bench: ESP-IDF (this repo's toolchain), `openocd-esp32`, and a se
    python3 -c "d=open('cap.bin','rb').read(); i=d.find(b'>')+3; p=d[i:d.find(b'</PATTERN>')-2]; \
                print('OK' if all(b==(k&0xFF) for k,b in enumerate(p)) else 'MISMATCH', len(p),'bytes')"
    ```
-5. **baud ladder (above normal use):** console `baud 921600` → switch `picocom` to 921600 →
-   `pattern 1000000` → verify. Repeat for **1.5M, 2M, 3M, 4M**. (4M is the standard-tooling
-   ceiling — `B4000000` is the top standard Linux baud; the target UART itself does 5M cleanly,
-   so the wall you find is the bridge/host/wiring, not this firmware.)
+5. **baud ladder (above normal use):** set the target rung — console `baud 921600` **or** tap the
+   GPIO12 (up) / GPIO11 (down) button — then switch `picocom` to the same rate → `pattern 1000000`
+   → verify. Walk the ladder: `9600, 115200, 230400, 460800, 921600, 1.5M, 2M, 4M, 4.1M`.
+   (4M is the standard-tooling ceiling — `B4000000` is the top standard Linux baud; the target UART
+   itself does 5M cleanly, so the wall you find is the bridge/host/wiring, not this firmware. The
+   4.1M rung is deliberately just past 4M to probe that edge.)
 
 ### B. JTAG — connect, smoke, stress
 1. OpenOCD (adapter = the ESP-Prog-2's esp-usb-bridge JTAG):
