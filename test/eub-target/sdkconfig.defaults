@@ -1,0 +1,9 @@
+# eub-target build defaults
+CONFIG_IDF_TARGET="esp32s3"
+
+# Console on the native USB-Serial/JTAG (the dev board's own USB), so UART0 is free for the
+# bridge test channel and logs/commands don't collide with test data.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Keep the default -Og debug optimization -- good, predictable stepping/inspection over JTAG.
+CONFIG_COMPILER_OPTIMIZATION_DEBUG=y

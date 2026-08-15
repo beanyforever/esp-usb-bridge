@@ -1,0 +1,37 @@
+menu "eub-target configuration"
+
+    config EUB_TARGET_UART_NUM
+        int "Bridge UART port number"
+        default 0
+        help
+            UART port wired to the ESP-Prog-2 serial bridge. The console lives on the native
+            USB-Serial/JTAG, so UART0 is free to use here.
+
+    config EUB_TARGET_UART_TX
+        int "Bridge UART TX GPIO"
+        default 43
+        help
+            Target TX -> ESP-Prog-2 RXD. Default 43 = the ESP32-S3 UART0 default TX.
+
+    config EUB_TARGET_UART_RX
+        int "Bridge UART RX GPIO"
+        default 44
+        help
+            Target RX <- ESP-Prog-2 TXD. Default 44 = the ESP32-S3 UART0 default RX.
+
+    config EUB_TARGET_DEFAULT_BAUD
+        int "Bridge UART default baud"
+        default 115200
+
+    config EUB_TARGET_MAX_BAUD
+        int "Bridge UART max baud (upper clamp for the 'baud' command)"
+        default 5000000
+
+    config EUB_TARGET_LED_GPIO
+        int "Activity LED GPIO (-1 disables)"
+        default -1
+        help
+            Optional plain-GPIO LED toggled by app_tick(). Default -1 (disabled) to avoid
+            board-specific addressable-RGB pins; the JTAG counter is the reliable observable.
+
+endmenu
