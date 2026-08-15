@@ -34,6 +34,14 @@ menu "eub-target configuration"
             Optional plain-GPIO LED toggled by app_tick(). Default -1 (disabled) to avoid
             board-specific addressable-RGB pins; the JTAG counter is the reliable observable.
 
+    config EUB_TARGET_RGB_GPIO
+        int "WS2812 RGB status LED GPIO (-1 disables)"
+        default 48
+        help
+            Addressable WS2812 LED (via the led_strip component). Shows the current baud rung as
+            a base color, flashing green on serial echo and magenta during a pattern burst.
+            Default 48 = the ESP32-S3-DevKitC-1 onboard RGB. Set -1 to disable.
+
     config EUB_TARGET_BAUD_UP_GPIO
         int "Baud step-UP button GPIO (-1 disables)"
         default 12

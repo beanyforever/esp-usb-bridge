@@ -53,6 +53,23 @@ GND. Each press moves one rung along the ladder (clamped at the ends):
 Pins are configurable in menuconfig (default UP=12, DOWN=11). **Avoid GPIO33–37** on octal-PSRAM
 (R8) modules — they're the PSRAM data pins.
 
+## Status LED (WS2812 RGB)
+
+An addressable WS2812 on **GPIO48** (configurable; `-1` disables) shows the firmware's state at a glance:
+
+| State | Color |
+|---|---|
+| Boot (~1 s) | white |
+| Idle — **base = current baud rung** | red → orange → yellow → lime → spring → cyan → blue → violet → pink (9600 … 4.1M) |
+| Serial echo / RX activity | green flash (over the base) |
+| Pattern burst in progress | magenta |
+
+Priority: burst (magenta) > echo (green) > base rung color. So as you press the baud buttons you
+*see* the rung change color, with green/magenta blinking over the top on activity. Default GPIO48 is
+the DevKitC-1 onboard RGB; change the pin or set `-1` in menuconfig. Init is non-fatal — if there's
+no WS2812 present, the firmware just logs it and carries on (the JTAG `g_tick_counter` is still the
+authoritative liveness signal).
+
 ## Console commands (on the dev board's own USB)
 
 Open it with `idf.py -p <DEVBOARD_USB_PORT> monitor` (or any terminal). Commands:

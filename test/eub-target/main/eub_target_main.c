@@ -29,6 +29,8 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_app_desc.h"
+#include "esp_timer.h"
+#include "led_strip.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "eub-target";
@@ -45,6 +47,7 @@ static const char *TAG = "eub-target";
 #define DEFAULT_BURST_LEN (64 * 1024)
 #define BAUD_UP_GPIO      (CONFIG_EUB_TARGET_BAUD_UP_GPIO)     /* pull-up, GND = step up   */
 #define BAUD_DOWN_GPIO    (CONFIG_EUB_TARGET_BAUD_DOWN_GPIO)   /* pull-up, GND = step down */
+#define RGB_GPIO          (CONFIG_EUB_TARGET_RGB_GPIO)         /* WS2812 status LED (-1 off) */
 
 /* ---- JTAG-observable state (read these from GDB) ---- */
 volatile uint32_t g_tick_counter   = 0;   /* ++ every app_tick(); a halt should freeze it */
@@ -80,6 +83,49 @@ static int ladder_index_for(uint32_t baud)
         }
     }
     return best;
+}
+
+/* ---- WS2812 status LED: base color = current baud rung, green flash on echo, magenta on burst ---- */
+static led_strip_handle_t s_strip = NULL;
+static volatile int64_t s_last_rx_us = 0;   /* last bridge-UART RX time (for the green echo flash) */
+static int64_t s_boot_until_us = 0;         /* show white until this time */
+
+/* Dim base color per ladder rung (kept away from pure green/magenta so the overlays stand out). */
+static const uint8_t RUNG_RGB[BAUD_LADDER_N][3] = {
+    { 40,  0,  0 },  /* 9600     red    */
+    { 40, 14,  0 },  /* 115200   orange */
+    { 34, 30,  0 },  /* 230400   yellow */
+    { 14, 34,  0 },  /* 460800   lime   */
+    {  0, 34, 14 },  /* 921600   spring */
+    {  0, 26, 34 },  /* 1.5M     cyan   */
+    {  0, 10, 40 },  /* 2M       blue   */
+    { 22,  0, 40 },  /* 4M       violet */
+    { 40,  0, 24 },  /* 4.1M     pink   */
+};
+_Static_assert(sizeof(RUNG_RGB) / sizeof(RUNG_RGB[0]) == BAUD_LADDER_N,
+               "RUNG_RGB must have one color per baud-ladder rung");
+
+/* Recompute the LED color from current state. Called ~10 Hz from tick_task. */
+static void led_update(void)
+{
+    if (!s_strip) {
+        return;
+    }
+    uint8_t r, g, b;
+    int64_t now = esp_timer_get_time();
+    if (now < s_boot_until_us) {                 /* boot: white */
+        r = 60; g = 60; b = 60;
+    } else if (s_burst_active) {                  /* pattern burst: magenta */
+        r = 60; g = 0; b = 60;
+    } else if (now - s_last_rx_us < 200000) {     /* recent echo (200 ms): green */
+        r = 0; g = 60; b = 0;
+    } else {                                      /* base: current baud rung */
+        r = RUNG_RGB[s_baud_index][0];
+        g = RUNG_RGB[s_baud_index][1];
+        b = RUNG_RGB[s_baud_index][2];
+    }
+    led_strip_set_pixel(s_strip, 0, r, g, b);
+    led_strip_refresh(s_strip);
 }
 
 static void jtag_buffers_init(void)
@@ -227,6 +273,7 @@ static void bridge_rx_task(void *arg)
         if (n > 0) {
             uart_write_bytes(BRIDGE_UART, buf, n);   /* exact round-trip echo */
             g_echo_bytes += (uint32_t)n;
+            s_last_rx_us = esp_timer_get_time();     /* drives the green echo flash */
             if (memchr(buf, BURST_TRIGGER, (size_t)n) != NULL) {
                 pattern_burst(DEFAULT_BURST_LEN);
             }
@@ -239,6 +286,7 @@ static void tick_task(void *arg)
     int hb = 0;
     for (;;) {
         app_tick();                       /* ~10 Hz: keeps a debugger's halt/step busy */
+        led_update();                     /* refresh the WS2812 from current state */
         if (++hb >= 10) {                 /* ~1 Hz heartbeat on the bridge */
             hb = 0;
             if (!s_burst_active) {
@@ -312,6 +360,26 @@ void app_main(void)
     gpio_config(&led_io);
 #endif
 
+    /* WS2812 status LED (base = baud rung, green = echo, magenta = burst). Non-fatal on failure. */
+    s_boot_until_us = esp_timer_get_time() + 1000000;   /* white for ~1 s at boot */
+    if (RGB_GPIO >= 0) {
+        led_strip_config_t sc = {
+            .strip_gpio_num = RGB_GPIO,
+            .max_leds = 1,
+            .led_pixel_format = LED_PIXEL_FORMAT_GRB,
+            .led_model = LED_MODEL_WS2812,
+        };
+        led_strip_rmt_config_t rc = {
+            .clk_src = RMT_CLK_SRC_DEFAULT,
+            .resolution_hz = 10 * 1000 * 1000,
+        };
+        esp_err_t e = led_strip_new_rmt_device(&sc, &rc, &s_strip);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "WS2812 init on GPIO%d failed: %s (LED disabled)", RGB_GPIO, esp_err_to_name(e));
+            s_strip = NULL;
+        }
+    }
+
     /* Bridge UART to the ESP-Prog-2. */
     uart_config_t uc = {
         .baud_rate = DEFAULT_BAUD,
@@ -357,6 +425,7 @@ void app_main(void)
     ESP_LOGI(TAG, "console commands: baud <n> | pattern [n] | status | help");
     ESP_LOGI(TAG, "baud buttons: up=GPIO%d down=GPIO%d (GND=press); ladder rungs=%d, start=%" PRIu32,
              BAUD_UP_GPIO, BAUD_DOWN_GPIO, BAUD_LADDER_N, BAUD_LADDER[s_baud_index]);
+    ESP_LOGI(TAG, "WS2812 status LED: GPIO%d %s", RGB_GPIO, s_strip ? "active" : "disabled");
 
     bridge_printf("\r\n=== eub-target %s  mac=%02x:%02x:%02x:%02x:%02x:%02x  baud=%d ===\r\n",
                   app->version, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], DEFAULT_BAUD);
